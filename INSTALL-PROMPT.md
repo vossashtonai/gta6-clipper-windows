@@ -4,13 +4,17 @@
 
 Here are both GTA 6 clipper skills from the video. This is the Windows version (Windows 10/11). Mac version: https://github.com/vossashtonai/gta6-clipper
 
-**1. Open PowerShell** (click Start, type PowerShell, open it), paste this and press Enter:
+**1. Open PowerShell** (click Start, type PowerShell, open it), then clone and inspect the repository:
 
 ```powershell
-irm https://raw.githubusercontent.com/vossashtonai/gta6-clipper-windows/main/install.ps1 | iex
+git clone https://github.com/vossashtonai/gta6-clipper-windows.git "$env:TEMP\gta6-clipper-windows"
+Set-Location "$env:TEMP\gta6-clipper-windows"
+Get-Content .\install.ps1
+Get-Content .\skills\gta6-clipper\scripts\setup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Wait until it says READY (first time 5 to 10 minutes). PowerShell is already on every Windows PC.
+Wait until it says READY (first time 5 to 10 minutes).
 
 **2. Restart Claude Code, then say one of these:**
 

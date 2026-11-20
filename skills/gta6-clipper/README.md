@@ -1,4 +1,4 @@
-# GTA 6 Clipper (free Claude Code skill)
+# GTA 6 Clipper (Claude Code skill and standalone CLI)
 
 An AI that clips GTA 6 streams for you. Give it a stream link from YouTube, Twitch or Kick (or nothing,
 and it finds today's biggest GTA 6 streams) and you get ready-to-post vertical clips: facecam on top,
@@ -37,6 +37,22 @@ Plans start at $20/month. No API keys. Everything except the picking runs on you
 Honest take: the free model isn't Claude. It's slower, the picks are rougher, and expect some back and
 forth. It still beats scrubbing a stream by hand.
 
+## Way 3: standalone URL-to-clips CLI (no Claude Code)
+
+Set up the skill dependencies once, install Ollama, and pull a local model. 16 GB RAM: `qwen3.5:9b`;
+32 GB or more: `qwen3.5:27b`. Keep Ollama running. From the repository root, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\skills\gta6-clipper\scripts\setup.ps1
+ollama pull qwen3.5:9b
+.\skills\gta6-clipper\.venv\Scripts\python.exe .\skills\gta6-clipper\scripts\gta6clip.py clip-url "https://youtube.com/watch?v=..."
+```
+
+The CLI detects finished and live URLs. For a finished stream, it prepares the stream, asks Ollama to pick
+moments, and renders up to three clips automatically. For a live stream, it keeps recording and scoring
+windows until the stream ends; press Ctrl+C to stop and finish the last window. Use `--model qwen3.5:27b`
+to select another model or `--cookies firefox` for login-protected streams. The default model is `qwen3.5:9b`.
+
 ## Good to know
 
 - Windows 10 or 11 (64-bit). Mac version: https://github.com/vossashtonai/gta6-clipper
@@ -56,6 +72,6 @@ forth. It still beats scrubbing a stream by hand.
 SKILL.md                 instructions Claude follows
 references/picking.md    how the AI picks and scores moments
 scripts/setup.ps1        installs everything (ffmpeg, faster-whisper, yt-dlp, OpenCV...)
-scripts/gta6clip.py      discover / prep / status / render
+scripts/gta6clip.py      discover / prep / clip-url / status / render
 ~/GTA6-Clips/<run>/     transcript, chunks, picks, clips/ (live runs in ~/GTA6-Clips/live/)
 ```

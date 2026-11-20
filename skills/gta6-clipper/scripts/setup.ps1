@@ -1,6 +1,5 @@
-# GTA 6 Clipper setup (Windows): checks what this PC needs, installs what's missing, says when it's ready.
-# Safe to re-run any time (it also updates yt-dlp, which fixes most download errors).
-# Run:  powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1
+# GTA 6 Clipper setup (Windows): checks what this PC needs, installs pinned dependencies, says when ready.
+# Run: powershell -NoProfile -File setup.ps1
 $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is 10x slower with the progress bar
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -48,57 +47,46 @@ if (-not $ff -and $HasWinget) {
   Run-Quiet "winget" @("install", "--id", "Gyan.FFmpeg", "-e", "--silent", "--accept-source-agreements", "--accept-package-agreements") | Out-Null
   Refresh-Path; $ff = Find-Exe "ffmpeg" $ffDirs
 }
-if (-not $ff) {
-  Inst "FFmpeg (direct download, ~150 MB)"
-  $zip = Join-Path $env:TEMP "gta6-ffmpeg.zip"
-  try {
-    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile $zip
-    $tmp = Join-Path $env:TEMP "gta6-ffmpeg"; Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-    Expand-Archive -Path $zip -DestinationPath $tmp -Force
-    $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
-    Remove-Item -Recurse -Force (Join-Path $Bin "ffmpeg") -ErrorAction SilentlyContinue
-    Move-Item $inner.FullName (Join-Path $Bin "ffmpeg")
-    Remove-Item -Force $zip -ErrorAction SilentlyContinue
-  } catch { }
-  $ff = Find-Exe "ffmpeg" $ffDirs
-}
 $fp = $null
 if ($ff) { $fp = Find-Exe "ffprobe" @((Split-Path $ff)) }
-if ($ff -and $fp) { Ok "FFmpeg ($ff)" } else { Fail "FFmpeg (install from https://www.gyan.dev/ffmpeg/builds/ and re-run)" }
+if ($ff -and $fp) { Ok "FFmpeg ($ff)" } else { Fail "FFmpeg (install with winget: winget install --id Gyan.FFmpeg -e)" }
 
 # 2. Deno (yt-dlp needs a JavaScript runtime for YouTube)
 $denoDirs = @((Join-Path $env:USERPROFILE ".deno\bin"))
 $deno = Find-Exe "deno" $denoDirs
 if (-not $deno) {
   Inst "Deno"
-  try { Invoke-RestMethod https://deno.land/install.ps1 | Invoke-Expression | Out-Null } catch { }
-  Refresh-Path; $deno = Find-Exe "deno" $denoDirs
-  if (-not $deno -and $HasWinget) {
+  if ($HasWinget) {
     Run-Quiet "winget" @("install", "--id", "DenoLand.Deno", "-e", "--silent", "--accept-source-agreements", "--accept-package-agreements") | Out-Null
     Refresh-Path; $deno = Find-Exe "deno" $denoDirs
   }
+  if (-not $deno) { Fail "Deno (install with winget: winget install --id DenoLand.Deno -e)" }
 }
-if ($deno) { Ok "Deno" } else { Fail "Deno (https://deno.com, then re-run)" }
+if ($deno) { Ok "Deno" }
 
 # 3. uv (fast Python + venv manager; also brings Python 3.12, no system Python needed)
 $uvDirs = @((Join-Path $env:USERPROFILE ".local\bin"), (Join-Path $env:USERPROFILE ".cargo\bin"))
 $uv = Find-Exe "uv" $uvDirs
 if (-not $uv) {
   Inst "uv"
-  try { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression | Out-Null } catch { }
-  Refresh-Path; $uv = Find-Exe "uv" $uvDirs
+  if ($HasWinget) {
+    Run-Quiet "winget" @("install", "--id", "astral-sh.uv", "-e", "--silent", "--accept-source-agreements", "--accept-package-agreements") | Out-Null
+    Refresh-Path; $uv = Find-Exe "uv" $uvDirs
+  }
+  if (-not $uv) { Fail "uv (install with winget: winget install --id astral-sh.uv -e)" }
 }
-if ($uv) { Ok "uv" } else { Fail "uv (https://docs.astral.sh/uv/, then re-run)" }
+if ($uv) { Ok "uv" }
 
-# 4. Python environment: yt-dlp (always latest), faster-whisper (speech to text), OpenCV (facecam), Pillow (captions)
+# 4. Python environment: exact package versions and hashes are in requirements.lock.
 $Py = Join-Path $Venv "Scripts\python.exe"
 if ($uv) {
   # ARM laptops (Snapdragon): the speech + video libraries only ship for x64, so use x64 Python (runs emulated)
   $PyVer = "3.12"
   if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") { $PyVer = "cpython-3.12-windows-x86_64-none"; Write-Host "  [info]    ARM PC: using x64 Python" }
   if (-not (Test-Path $Py)) { Inst "Python 3.12 environment"; Run-Quiet $uv @("venv", "--python", $PyVer, $Venv) | Out-Null }
-  Inst "Python packages (first run downloads ~150 MB)"
-  $code = Run-Quiet $uv @("pip", "install", "--python", $Py, "-q", "-U", "yt-dlp[default]", "faster-whisper", "opencv-python-headless", "pillow", "numpy")
+  Inst "Pinned Python packages (hash-verified, first run downloads ~150 MB)"
+  $Requirements = Join-Path $SkillDir "requirements.lock"
+  $code = Run-Quiet $uv @("pip", "install", "--python", $Py, "--require-hashes", "-r", $Requirements)
   if ($code -eq 0) { Ok "Python packages (yt-dlp, faster-whisper, opencv, pillow, numpy)" } else { Fail "Python packages" }
 }
 
@@ -106,17 +94,31 @@ if ($uv) {
 $WhisperDir = Join-Path $Models "whisper"
 if (Test-Path $Py) {
   Inst "Whisper small.en model (skips if already downloaded)"
-  $code = Run-Quiet $Py @("-c", "from faster_whisper import WhisperModel; WhisperModel('small.en', device='cpu', compute_type='int8', download_root=r'$WhisperDir')")
+  $WhisperRevision = "d1d751a5f8271d482d14ca55d9e2deeebbae577f"
+  $code = Run-Quiet $Py @("-c", "from faster_whisper import WhisperModel; WhisperModel('small.en', device='cpu', compute_type='int8', download_root=r'$WhisperDir', revision='$WhisperRevision')")
   if ($code -eq 0) { Ok "Whisper model" } else { Fail "Whisper model (check your internet and re-run)" }
 }
 
 # 6. Face detector (YuNet, ~230 KB) used to find the facecam box
 $Yunet = Join-Path $Models "face_detection_yunet_2023mar.onnx"
-if (-not (Test-Path $Yunet) -or (Get-Item $Yunet).Length -lt 100000) {
+$YunetSha256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+$YunetActual = if (Test-Path $Yunet) { (Get-FileHash -Path $Yunet -Algorithm SHA256).Hash.ToLowerInvariant() } else { "" }
+if ($YunetActual -ne $YunetSha256) {
   Inst "YuNet face detector"
-  try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" -OutFile $Yunet } catch { }
+  $Download = "$Yunet.download"
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" -OutFile $Download
+    $DownloadedHash = (Get-FileHash -Path $Download -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($DownloadedHash -ne $YunetSha256) { throw "YuNet SHA-256 mismatch: expected $YunetSha256, got $DownloadedHash" }
+    Move-Item -Force $Download $Yunet
+  } catch {
+    Fail "Face detector download or verification failed: $($_.Exception.Message)"
+  } finally {
+    Remove-Item -Force $Download -ErrorAction SilentlyContinue
+  }
 }
-if ((Test-Path $Yunet) -and (Get-Item $Yunet).Length -gt 100000) { Ok "Face detector" } else { Fail "Face detector" }
+$YunetActual = if (Test-Path $Yunet) { (Get-FileHash -Path $Yunet -Algorithm SHA256).Hash.ToLowerInvariant() } else { "" }
+if ($YunetActual -eq $YunetSha256) { Ok "Face detector (SHA-256 verified)" } else { Fail "Face detector" }
 
 # 7. Caption font (Windows ships Arial Black)
 $Fonts = Join-Path $env:WINDIR "Fonts"
@@ -130,7 +132,7 @@ if ($freeGB -lt 3) { Write-Host "  [warn]    Only $freeGB GB free. Each stream n
 # config.json: absolute tool folders so it works before Claude Code / the terminal is restarted
 $dirs = @()
 foreach ($x in @($ff, $deno)) { if ($x) { $dirs += (Split-Path $x) } }
-$cfg = @{ whisper_model = "small.en"; whisper_dir = $WhisperDir; yunet_model = $Yunet; path_dirs = $dirs }
+$cfg = @{ whisper_model = "small.en"; whisper_revision = "d1d751a5f8271d482d14ca55d9e2deeebbae577f"; whisper_dir = $WhisperDir; yunet_model = $Yunet; path_dirs = $dirs }
 [IO.File]::WriteAllText((Join-Path $SkillDir "config.json"), ($cfg | ConvertTo-Json -Compress))
 
 if (-not $script:Failed) {

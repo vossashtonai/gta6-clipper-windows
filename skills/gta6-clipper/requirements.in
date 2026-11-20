@@ -1,0 +1,5 @@
+yt-dlp[default]==2026.10.26
+faster-whisper==1.2.1
+opencv-python-headless==5.1.0.95
+pillow==13.0.0
+numpy==2.5.5

@@ -86,7 +86,8 @@ check("prep finished", r.returncode == 0 and runs, f"{time.time() - t:.0f}s")
 if runs:
     rd = runs[0]
     chunk = (rd / "chunks" / "chunk_01.md").read_text(encoding="utf-8")
-    check("transcript has speech", "country" in chunk.lower(), chunk.splitlines()[4][:80] if len(chunk.splitlines()) > 4 else "")
+    check("VOD transcript marked untrusted", chunk.splitlines()[0] == g.UNTRUSTED_TRANSCRIPT_NOTICE)
+    check("transcript has speech", "country" in chunk.lower(), chunk.splitlines()[5][:80] if len(chunk.splitlines()) > 5 else "")
     check("loud burst marked", "LOUD(" in chunk)
     (rd / "picks" / "chunk_01.json").write_text(json.dumps([{
         "start": "00:01:05", "end": "00:01:30", "score": 8.5, "category": "hype", "title": "Smoke test clip",
@@ -116,6 +117,8 @@ LCMD = [PY, str(LIVE_DIR / "scripts" / "live.py")]
 
 r = sh(LCMD + ["next", str(lrd), "--wait", "150"])
 check("live: first window arrived", "WINDOW: window_001.md" in r.stdout, r.stdout.splitlines()[0] if r.stdout else r.stderr[-200:])
+window = (lrd / "windows" / "window_001.md").read_text(encoding="utf-8")
+check("live transcript marked untrusted", window.splitlines()[0] == g.UNTRUSTED_TRANSCRIPT_NOTICE)
 st = json.loads(sh(LCMD + ["status", str(lrd)]).stdout)
 check("live: status sees recorder alive", st.get("recorder_running") is True, json.dumps(st))
 (lrd / "picks" / "window_001.json").write_text(json.dumps([{

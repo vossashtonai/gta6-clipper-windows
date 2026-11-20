@@ -6,14 +6,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Install exactly like a viewer (install.ps1 -> %USERPROFILE%\.claude\skills -> setup.ps1)
+      - name: Install from the checked-out source
         shell: powershell
         run: |
           # simulate a viewer who installed the Mac version first
           New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills\gta6-clipper\scripts" | Out-Null
           Set-Content "$env:USERPROFILE\.claude\skills\gta6-clipper\scripts\setup.sh" "echo Mac only for now."
-          $env:GTA6_INSTALL_SRC = (Get-Location).Path
-          Get-Content install.ps1 -Raw | Invoke-Expression
+          .\install.ps1
           if (-not (Test-Path "$env:USERPROFILE\.claude\skills\gta6-clipper\.ready")) { throw "install did not finish" }
           if (-not (Test-Path "$env:USERPROFILE\.claude\skills\gta6-live-clipper\scripts\live.py")) { throw "live skill missing" }
           if (Test-Path "$env:USERPROFILE\.claude\skills\gta6-clipper\scripts\setup.sh") { throw "old Mac setup.sh left behind" }
@@ -21,4 +20,5 @@ jobs:
         shell: powershell
         run: |
           $env:GTA6_SKILLS_DIR = "$env:USERPROFILE\.claude\skills"
+          & "$env:USERPROFILE\.claude\skills\gta6-clipper\.venv\Scripts\python.exe" tests\test_ollama_auto.py
           & "$env:USERPROFILE\.claude\skills\gta6-clipper\.venv\Scripts\python.exe" tests\smoke.py

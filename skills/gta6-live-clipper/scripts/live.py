@@ -207,7 +207,8 @@ class Daemon:
         while (k + 1) * W <= covered:
             a, b = max(0, k * W - 45), (k + 1) * W  # 45 s overlap so nothing is cut in half
             chat = self.chat_spikes(a, b)
-            lines = [f"# LIVE {self.cfg.get('streamer')}: {self.cfg.get('title')}",
+            lines = [g.UNTRUSTED_TRANSCRIPT_NOTICE,
+                     f"# LIVE {self.cfg.get('streamer')}: {self.cfg.get('title')}",
                      f"Window {k + 1}  ({g.hms(a)} to {g.hms(b)} of the recording)",
                      "Markers: LOUD(+dB over normal) = streamer got loud. CHAT xN = chat moving N times faster than normal.", ""]
             for s in self.transcript:
@@ -226,8 +227,10 @@ class Daemon:
         if covered - k * W > 60:  # stream ended mid-window: write the partial one
             self.cfg["window_min_override"] = True
             a, b = max(0, k * W - 45), covered
-            lines = [f"# LIVE {self.cfg.get('streamer')}: {self.cfg.get('title')}",
-                     f"Window {k + 1} (final, {g.hms(a)} to {g.hms(b)})", ""]
+            lines = [g.UNTRUSTED_TRANSCRIPT_NOTICE,
+                     f"# LIVE {self.cfg.get('streamer')}: {self.cfg.get('title')}",
+                     f"Window {k + 1} (final, {g.hms(a)} to {g.hms(b)})",
+                     ""]
             lines += [f"[{g.hms(s['start'])}] {s['text']}" for s in self.transcript if a < s["end"] and s["start"] < b]
             (self.rd / "windows" / f"window_{k + 1:03d}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
             self.save_state(windows=k + 1)
@@ -292,6 +295,7 @@ class Daemon:
 # ================================================================ CLI
 def cmd_start(a):
     RUNS.mkdir(parents=True, exist_ok=True)
+    runs = []
     for url in a.urls:
         try:
             meta = g.ytdlp_json(url, a.cookies, ["--no-playlist"])
@@ -311,6 +315,8 @@ def cmd_start(a):
         p = spawn_daemon([sys.executable, __file__, "_daemon", str(rd)], rd / "daemon.log")
         (rd / "pid").write_text(str(p.pid), encoding="utf-8")
         log(f"RECORDING {streamer}: {meta.get('title')}\n  run: {rd}")
+        runs.append(rd)
+    return runs
 
 
 def spawn_daemon(cmd, logf):
@@ -427,6 +433,71 @@ def cmd_stop(a):
         log(f"stopping {rd.name} (last window is written once the recorder closes)")
 
 
+def process_ollama_window(rd, window, base_url, model, min_score):
+    info = jload(rd / "stream.json", {})
+    transcript = jload(rd / "transcript.json", [])
+    covered = jload(rd / "state.json", {}).get("covered", 0)
+    duration = max((float(segment["end"]) for segment in transcript), default=float(covered))
+    response = g.ollama_pick_chunk(
+        base_url, model, info["streamer"], info.get("title", ""),
+        window.read_text(encoding="utf-8"), min_score,
+    )
+    picks = g.validate_ollama_candidates(response, info["streamer"], duration, min_score)
+    output = rd / "picks" / f"{window.stem}.json"
+    jsave(output, picks)
+    log(f"  {window.name}: {len(picks)} candidate(s)")
+    return picks
+
+
+def process_pending_ollama_windows(rd, base_url, model, min_score, keep):
+    for window in pending_windows(rd):
+        picks = process_ollama_window(rd, window, base_url, model, min_score)
+        if picks:
+            cmd_clip(argparse.Namespace(runs=[str(rd)], min_score=min_score, keep=keep))
+
+
+def cmd_clip_url(a):
+    if not 0 <= a.min_score <= 10:
+        sys.exit("--min-score must be between 0 and 10")
+    try:
+        base_url = g.normalize_ollama_url(a.ollama_url)
+        g.require_ollama_model(base_url, a.model)
+    except (RuntimeError, ValueError) as exc:
+        sys.exit(f"Local Ollama setup error: {exc}")
+
+    runs = cmd_start(argparse.Namespace(
+        urls=[a.url], cookies=a.cookies, quality=a.quality,
+        buffer_min=a.buffer_min, window_min=a.window_min,
+    ))
+    if not runs:
+        sys.exit("Could not start recording. Check the URL and stream status above.")
+    rd = runs[0]
+    log(f"Automatically clipping live stream. Press Ctrl+C to stop recording and finish its last window.")
+    try:
+        while True:
+            process_pending_ollama_windows(rd, base_url, a.model, a.min_score, a.keep)
+            state = jload(rd / "state.json", {})
+            if state.get("ended") and not pending_windows(rd):
+                cmd_clip(argparse.Namespace(runs=[str(rd)], min_score=a.min_score, keep=a.keep))
+                log(f"Live stream finished. Clips are in {rd / 'clips'}")
+                return
+            if not pid_alive(int((rd / "pid").read_text(encoding="utf-8"))):
+                if not state.get("ended"):
+                    raise RuntimeError(f"Live recorder stopped unexpectedly. Check {rd / 'daemon.log'}")
+            time.sleep(2)
+    except KeyboardInterrupt:
+        log("Stopping the live recorder and finishing its last window...")
+        cmd_stop(argparse.Namespace(runs=[str(rd)]))
+        while pid_alive(int((rd / "pid").read_text(encoding="utf-8"))):
+            time.sleep(2)
+        process_pending_ollama_windows(rd, base_url, a.model, a.min_score, a.keep)
+        cmd_clip(argparse.Namespace(runs=[str(rd)], min_score=a.min_score, keep=a.keep))
+        log(f"Stopped. Clips are in {rd / 'clips'}")
+    except Exception:
+        cmd_stop(argparse.Namespace(runs=[str(rd)]))
+        raise
+
+
 def main():
     if not (VOD / ".ready").exists():
         sys.exit(f"Set up the GTA 6 clipper first: powershell -NoProfile -ExecutionPolicy Bypass -File \"{VOD / 'scripts' / 'setup.ps1'}\"")
@@ -438,6 +509,16 @@ def main():
     n = sp.add_parser("next"); n.add_argument("runs", nargs="+"); n.add_argument("--wait", type=int, default=540)
     c = sp.add_parser("clip"); c.add_argument("runs", nargs="+"); c.add_argument("--min-score", type=float, default=7.5)
     c.add_argument("--keep", action="store_true")
+    auto = sp.add_parser("clip-url", help="record a live URL and automatically select and render clips with Ollama")
+    auto.add_argument("url")
+    auto.add_argument("--model", default=os.environ.get("GTA6_OLLAMA_MODEL", "qwen3.5:9b"))
+    auto.add_argument("--ollama-url", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+    auto.add_argument("--cookies")
+    auto.add_argument("--quality", type=int, default=720)
+    auto.add_argument("--buffer-min", type=int, default=15)
+    auto.add_argument("--window-min", type=int, default=5)
+    auto.add_argument("--min-score", type=float, default=7.5)
+    auto.add_argument("--keep", action="store_true")
     for name in ("status", "stop"):
         x = sp.add_parser(name); x.add_argument("runs", nargs="+")
     d = sp.add_parser("_daemon"); d.add_argument("run")
@@ -445,7 +526,8 @@ def main():
     if a.cmd == "_daemon":
         Daemon(Path(a.run)).run()
         return
-    {"start": cmd_start, "next": cmd_next, "clip": cmd_clip, "status": cmd_status, "stop": cmd_stop}[a.cmd](a)
+    {"start": cmd_start, "next": cmd_next, "clip": cmd_clip, "clip-url": cmd_clip_url,
+     "status": cmd_status, "stop": cmd_stop}[a.cmd](a)
 
 
 if __name__ == "__main__":
